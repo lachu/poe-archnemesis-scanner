@@ -220,7 +220,7 @@ class UIOverlay:
 
         self._root.configure(bg='')
         self._root.overrideredirect(True)
-        self._root.geometry("+5+5")
+        self._root.geometry("+5+125")
         self._root.wm_attributes("-topmost", True)
         self._recipes_visible = False
         self._result_visible = False
@@ -279,7 +279,7 @@ class UIOverlay:
                 locs = [search(x) for x in recipes[item]]
                 if all(loc is not None for loc in locs):
                     viable.append((item, [x for x in locs if len(x) > 0], False))
-                    return []
+                    return None
                 else:
                     for name, loc in zip(recipes[item], locs):
                         if loc is not None:
@@ -302,6 +302,12 @@ class UIOverlay:
         self._scan_label_text.set('Scanning...')
         self._root.update()
         results = self._image_scanner.scan()
+        print('Count:', sum(map(lambda x: len(x), results.values())))
+        item_list = []
+        for name, locs in results.items():
+            item_list.extend((loc, name) for loc in locs)
+        for loc, name in sorted(item_list):
+            print(loc, name)
         if len(results) > 0:
             for item in sorted(results.keys()):
                 print(item, results[item])
@@ -350,8 +356,9 @@ class UIOverlay:
         self._results = results
         self._available_recipes = available_recipes
         self._scan_results_window = UIOverlay.create_toplevel_window()
-        y = int(self._root.winfo_height())
-        self._scan_results_window.geometry(f'+0+{y}')
+        x = int(self._root.winfo_x())
+        y = int(self._root.winfo_y() + self._root.winfo_height())
+        self._scan_results_window.geometry(f'+{x}+{y}')
 
         last_column = 0
         if result_visible:
@@ -386,7 +393,7 @@ class UIOverlay:
         image.grid(row=row, column=column)
         tk.Label(self._scan_results_window, text=label_text, font=FONT_BIG, fg=highlight_color, bg=COLOR_BG).grid(row=row, column=column + 1, sticky='w', padx=5)
         row += 1
-        if row % 10 == 0:
+        if row % 8 == 0:
             column += 2
             row = 0
         return (row, column)
