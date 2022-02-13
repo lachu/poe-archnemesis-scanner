@@ -2,6 +2,8 @@ import sys
 from configparser import ConfigParser
 import tkinter as tk
 from typing import Callable, Any, Tuple, List, Dict
+import os
+import json
 
 import cv2
 import numpy as np
@@ -40,12 +42,12 @@ class ArchnemesisItemsMap:
             ('Mirror Image', ['Echoist', 'Soul Conduit']),
             ('Magma Barrier', ['Incendiary', 'Bonebreaker']),
             ('Evocationist', ['Flameweaver', 'Frostweaver', 'Stormweaver']),
-            ('Corpse Detonator', ['Necromancer', 'Incendiary']),
+            ('Corpse Detonator', ['Necr7omancer', 'Incendiary']),
             ('Flame Strider', ['Flameweaver', 'Hasted']),
             ('Soul Eater', ['Soul Conduit', 'Necromancer', 'Gargantuan']),
             ('Ice Prison', ['Permafrost', 'Sentinel']),
             ('Frost Strider', ['Frostweaver', 'Hasted']),
-            ('Treant Horder', ['Toxic', 'Sentinel', 'Steel-Infused']),
+            ('Treant Horde', ['Toxic', 'Sentinel', 'Steel-Infused']),
             ('Temporal Bubble', ['Juggernaut', 'Hexer', 'Arcane Buffer']),
             ('Entangler', ['Toxic', 'Bloodletter']),
             ('Drought Bringer', ['Malediction', 'Deadeye']),
@@ -83,7 +85,8 @@ class ArchnemesisItemsMap:
             ('Steel-Infused', []),
             ('Stormweaver', []),
             ('Toxic', []),
-            ('Vampiric', [])
+            ('Vampiric', []),
+            ('Combo', []),
         ]
         self._images = dict()
         self._update_images(scale)
@@ -154,12 +157,13 @@ class ImageScanner:
     def __init__(self, screen_width: int, screen_height: int, items_map: ArchnemesisItemsMap):
         self._screen_width = screen_width
         self._screen_height = screen_height
-        self._scanner_window_size = (0, int(self._screen_height / 4), int(self._screen_width / 3), int(self._screen_height * 2 / 3))
+        self._scanner_window_size = tuple(map(int, [0.1 * screen_height, 0.3 * screen_height, 0.41 * screen_height, 0.41 * screen_height]))
         self._items_map = items_map
         self._confidence_threshold = 0.94
 
     def scan(self) -> Dict[str, List[Tuple[int, int]]]:
         bbox = (self._scanner_window_size[0], self._scanner_window_size[1], self._scanner_window_size[0] + self._scanner_window_size[2], self._scanner_window_size[1] + self._scanner_window_size[3])
+        print('bbox=', bbox)
         screen = ImageGrab.grab(bbox=bbox)
         screen = np.array(screen)
         screen = cv2.cvtColor(screen, cv2.COLOR_RGB2BGR)
@@ -173,7 +177,6 @@ class ImageScanner:
             findings = np.where(heat_map >= self._confidence_threshold)
             if len(findings[0]) > 0:
                 results[item] = [(findings[1][i], findings[0][i]) for i in range(len(findings[0]))]
-        print(results)
         return results
 
     @property
@@ -219,6 +222,11 @@ class UIOverlay:
         self._root.overrideredirect(True)
         self._root.geometry("+5+5")
         self._root.wm_attributes("-topmost", True)
+        self._recipes_visible = False
+        self._result_visible = False
+
+        self._results = {}
+        self._available_recipes = []
 
     @staticmethod
     def create_toplevel_window(bg=''):
@@ -244,38 +252,109 @@ class UIOverlay:
         self._scan_label.bind("<Button-1>", self._scan)
         self._scan_label.grid(row=0, column=2)
 
+        self._toggle_label_text = tk.StringVar(self._root, value='▲')
+        self._toggle_label = tk.Button(self._root, textvariable=self._toggle_label_text, fg=COLOR_FG_GREEN, bg=COLOR_BG, font=FONT_SMALL)
+        self._toggle_label.bind("<Button-1>", self._toggle)
+        self._toggle_label.grid(row=0, column=3)
+    
+    def _eval(self, combo, inventory):
+        recipes = {}
+        for result, ingredient in self._items_map.recipes():
+            recipes[result] = ingredient
+        viable = []
+        reserved = {}
+
+        def search(item):
+            if inventory.get(item):
+                loc, inventory[item] = inventory[item][0], inventory[item][1:]
+                if len(inventory[item]) == 0:
+                    del inventory[item]
+                return loc
+            elif reserved.get(item):
+                loc, reserved[item] = reserved[item][0], reserved[item][1:]
+                if len(reserved[item]) == 0:
+                    del reserved[item]
+                return loc
+            elif len(recipes.get(item, [])) > 0:
+                locs = [search(x) for x in recipes[item]]
+                if all(loc is not None for loc in locs):
+                    viable.append((item, [x for x in locs if len(x) > 0], False))
+                    return []
+                else:
+                    for name, loc in zip(recipes[item], locs):
+                        if loc is not None:
+                            reserved.setdefault(name, [])
+                            reserved[name].append(loc)
+            return None
+
+        if all(inventory.get(i) for i in combo):
+            viable.append(('Combo', [inventory[i][0] for i in combo], False))
+            for item in combo:
+                inventory[item] = inventory[item][1:]
+                if len(inventory[item]) == 0:
+                    del inventory[item]
+        else:
+            for item in combo:
+                search(item)
+        return viable
+
     def _scan(self, _) -> None:
         self._scan_label_text.set('Scanning...')
         self._root.update()
         results = self._image_scanner.scan()
         if len(results) > 0:
-            available_recipes = list()
-            for item, recipe in self._items_map.recipes():
-                screen_items = [results.get(x) for x in recipe]
-                if all(screen_items):
-                    available_recipes.append((item, [x[0] for x in screen_items], item in results))
-
-            self._show_scan_results(results, available_recipes)
-
-            self._scan_label_text.set('Hide')
-            self._scan_label.bind('<Button-1>', self._hide)
+            for item in sorted(results.keys()):
+                print(item, results[item])
+            available_recipes = []
+            for combo in self._settings.combos():
+                available_recipes.extend(self._eval(combo, results))
+            self._results = results
+            self._available_recipes = available_recipes
+            self._set_recipes_visible(True, self._settings.should_display_inventory_items())
         else:
+            self._results = {}
+            self._available_recipes = []
+            self._hide(None)
+        self._scan_label_text.set('Scan')
+    
+    def _toggle(self, _) -> None:
+        if not self._recipes_visible:
+            self._set_recipes_visible(True, self._settings.should_display_inventory_items())
+        elif not self._result_visible:
+            self._set_recipes_visible(True, True)
+        else:
+            self._set_recipes_visible(False, False)
+    
+    def _set_recipes_visible(self, recipes_visible, result_visible):
+        self._recipes_visible = recipes_visible
+        self._result_visible = result_visible
+
+        if self._recipes_visible and self._result_visible:
+            self._toggle_label_text.set('▼')
+            self._show_scan_results(self._results, self._available_recipes, self._result_visible)
+        elif self._recipes_visible:
+            self._toggle_label_text.set('-')
+            self._show_scan_results(self._results, self._available_recipes, self._result_visible)
+        else:
+            self._toggle_label_text.set('▲')
             self._hide(None)
 
     def _hide(self, _) -> None:
         if self._scan_results_window is not None:
             self._scan_results_window.destroy()
         self._clear_highlights(None)
-        self._scan_label_text.set('Scan')
-        self._scan_label.bind('<Button-1>', self._scan)
 
-    def _show_scan_results(self, results: Dict[str, List[Tuple[int, int]]], available_recipes: List[Tuple[str, List[Tuple[int, int]], bool]]) -> None:
+    def _show_scan_results(self, results: Dict[str, List[Tuple[int, int]]], available_recipes: List[Tuple[str, List[Tuple[int, int]], bool]], result_visible: bool) -> None:
+        self._hide(None)
+        self._recipes_visible = True
+        self._results = results
+        self._available_recipes = available_recipes
         self._scan_results_window = UIOverlay.create_toplevel_window()
-        x = int(self._image_scanner.screen_width / 3)
-        self._scan_results_window.geometry(f'+{x}+0')
+        y = int(self._root.winfo_height())
+        self._scan_results_window.geometry(f'+0+{y}')
 
         last_column = 0
-        if self._settings.should_display_inventory_items():
+        if result_visible:
             last_column = self._show_inventory_list(results)
         self._show_available_recipes_list(available_recipes, last_column + 2)
 
@@ -353,7 +432,15 @@ class Settings:
         self._image_scanner.confidence_threshold = float(s.get('confidence_threshold', self._image_scanner.confidence_threshold))
         b = s.get('display_inventory_items')
         self._display_inventory_items = True if b is not None and b == 'True' else False
-
+        if s.get('combos') is None:
+            self._combos = [
+            ['Innocence-Touched', 'Brine King-Touched', 'Kitava-Touched', 'Treant Horde'],
+            ['Mirror Image', 'Assassin', 'Rejuvenating', 'Treant Horde'],
+            ['Innocence-Touched', 'Brine King-Touched', 'Kitava-Touched', 'Treant Horde'],
+            ['Arakaali-Touched', 'Brine King-Touched', 'Effigy', 'Treant Horde']
+        ]
+        else:
+            self._combos = json.loads(s.get('combos'))
 
     def show(self) -> None:
         self._window = tk.Toplevel()
@@ -389,6 +476,7 @@ class Settings:
         self._config['settings']['scanner_window'] = str(self._image_scanner.scanner_window_size)
         self._config['settings']['image_scale'] = str(self._items_map.scale)
         self._config['settings']['confidence_threshold'] = str(self._image_scanner.confidence_threshold)
+        self._config['settings']['combos'] = json.dumps(self._combos)
         self._config['settings']['display_inventory_items'] = str(self._display_inventory_items)
         with open(self._config_file, 'w') as f:
             self._config.write(f)
@@ -431,6 +519,8 @@ class Settings:
     def should_display_inventory_items(self) -> bool:
         return self._display_inventory_items
 
+    def combos(self):
+        return self._combos
 
 def calculate_default_scale(screen_width: int, screen_height: int) -> float:
     """
@@ -447,16 +537,54 @@ def calculate_default_scale(screen_width: int, screen_height: int) -> float:
 
     return scale
 
-# Create root as early as possible to initialize some modules (e.g. ImageTk)
-root = tk.Tk()
 
-# There are probably better ways to get screen resoultions but I'm lazy
-screen = ImageGrab.grab()
-SCREEN_WIDTH, SCREEN_HEIGHT = screen.size
+def tk_main():
+    # Create root as early as possible to initialize some modules (e.g. ImageTk)
+    root = tk.Tk()
 
-items_map = ArchnemesisItemsMap(calculate_default_scale(SCREEN_WIDTH, SCREEN_HEIGHT))
+    # There are probably better ways to get screen resoultions but I'm lazy
+    screen = ImageGrab.grab()
+    SCREEN_WIDTH, SCREEN_HEIGHT = screen.size
 
-image_scanner = ImageScanner(SCREEN_WIDTH, SCREEN_HEIGHT, items_map)
+    items_map = ArchnemesisItemsMap(calculate_default_scale(SCREEN_WIDTH, SCREEN_HEIGHT))
 
-overlay = UIOverlay(root, items_map, image_scanner)
-overlay.run()
+    image_scanner = ImageScanner(SCREEN_WIDTH, SCREEN_HEIGHT, items_map)
+
+    overlay = UIOverlay(root, items_map, image_scanner)
+    overlay.run()
+
+def main():
+    PATH = os.path.join(os.getenv('UserProfile'), r'Documents\My Games\Path of Exile\Screenshots')
+    print(ImageGrab.grab().size)
+
+    root = tk.Tk()
+    latest_img = os.path.join(PATH, max(os.listdir(PATH), key=lambda fn: int(fn[11:-4])))
+    with Image.open(latest_img) as screen:
+        SCREEN_WIDTH, SCREEN_HEIGHT = screen.size
+        items_map = ArchnemesisItemsMap(calculate_default_scale(SCREEN_WIDTH, SCREEN_HEIGHT))
+        image_scanner = ImageScanner(screen.crop(AREA), items_map)
+        result = image_scanner.scan()
+        print(result)
+        items = []
+        for name in result.keys():
+            items = items + [[loc[0], loc[1], name] for loc in result[name]]
+        for i in sorted(items):
+            print(i)
+        print('Count:', sum(map(lambda x: len(x), result.values())))
+        result = dict([x, len(result[x])] for x in result.keys() if len(result[x]) > 0)
+        combos = [
+            ['Innocence-Touched', 'Brine King-Touched', 'Kitava-Touched', 'Treant Horde'],
+            ['Innocence-Touched', 'Brine King-Touched', 'Kitava-Touched', 'Treant Horde'],
+            ['Mirror Image', 'Assassin', 'Rejuvenating', 'Treant Horde'],
+            ['Mirror Image', 'Assassin', 'Rejuvenating', 'Treant Horde'],
+            ['Arakaali-Touched', 'Brine King-Touched', 'Effigy', 'Treant Horde']
+        ]
+        recipe = 1
+        while recipe > 0:
+            recipe = 0
+            for combo in combos:
+                recipe += items_map.eval(combo, result)
+        for item, count in sorted([(x, result[x]) for x in result.keys()]):
+            print(item, count)
+
+tk_main()
