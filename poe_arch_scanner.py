@@ -42,7 +42,7 @@ class ArchnemesisItemsMap:
             ('Mirror Image', ['Echoist', 'Soul Conduit']),
             ('Magma Barrier', ['Incendiary', 'Bonebreaker']),
             ('Evocationist', ['Flameweaver', 'Frostweaver', 'Stormweaver']),
-            ('Corpse Detonator', ['Necr7omancer', 'Incendiary']),
+            ('Corpse Detonator', ['Necromancer', 'Incendiary']),
             ('Flame Strider', ['Flameweaver', 'Hasted']),
             ('Soul Eater', ['Soul Conduit', 'Necromancer', 'Gargantuan']),
             ('Ice Prison', ['Permafrost', 'Sentinel']),
@@ -262,6 +262,7 @@ class UIOverlay:
         for result, ingredient in self._items_map.recipes():
             recipes[result] = ingredient
         viable = []
+        short = []
         reserved = {}
 
         def search(item):
@@ -285,6 +286,8 @@ class UIOverlay:
                         if loc is not None:
                             reserved.setdefault(name, [])
                             reserved[name].append(loc)
+                        else:
+                            short.append(name)
             return None
 
         if all(inventory.get(i) for i in combo):
@@ -296,6 +299,7 @@ class UIOverlay:
         else:
             for item in combo:
                 search(item)
+        print('Short:', short)
         return viable
 
     def _scan(self, _) -> None:
@@ -316,7 +320,10 @@ class UIOverlay:
                 available_recipes.extend(self._eval(combo, results))
             self._results = results
             self._available_recipes = available_recipes
-            self._set_recipes_visible(True, self._settings.should_display_inventory_items())
+            if len(self._available_recipes) == 0:
+                self._hide(None)
+            else:
+                self._set_recipes_visible(True, self._settings.should_display_inventory_items())
         else:
             self._results = {}
             self._available_recipes = []
@@ -325,7 +332,10 @@ class UIOverlay:
     
     def _toggle(self, _) -> None:
         if not self._recipes_visible:
-            self._set_recipes_visible(True, self._settings.should_display_inventory_items())
+            if len(self._available_recipes) == 0:
+                self._set_recipes_visible(True, True)
+            else:
+                self._set_recipes_visible(True, self._settings.should_display_inventory_items())
         elif not self._result_visible:
             self._set_recipes_visible(True, True)
         else:
